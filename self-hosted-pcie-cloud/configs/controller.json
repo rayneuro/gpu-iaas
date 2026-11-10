@@ -1,0 +1,15 @@
+{
+  "execute": false,
+  "device_socket": "/tmp/gpu-iaas-demo/device.sock",
+  "database": "/tmp/gpu-iaas-demo/controller.sqlite",
+  "libvirt_uri": "qemu:///system",
+  "images_dir": "/var/lib/libvirt/images/gpu-iaas",
+  "allowed_images": ["/var/lib/libvirt/images/gpu-base.qcow2"],
+  "allowed_networks": ["default"],
+  "cpu_capacity": 8,
+  "memory_capacity_mib": 16384,
+  "boot_timeout": 180,
+  "shutdown_timeout": 60,
+  "ssh_private_key": "/etc/gpu-iaas/guest_key",
+  "known_hosts": "/etc/gpu-iaas/known_hosts"
+}

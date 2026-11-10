@@ -1,0 +1,8 @@
+{
+  "gpu": "0000:01:00.0",
+  "image": "/var/lib/libvirt/images/gpu-base.qcow2",
+  "memory_mib": 8192,
+  "vcpus": 4,
+  "ssh_public_key": "ssh-ed25519 REPLACE_WITH_VALID_PUBLIC_KEY",
+  "network": "default"
+}

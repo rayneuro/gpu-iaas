@@ -1,0 +1,4 @@
+# Empty by default. After host workload and topology review, add complete BDFs.
+# RTX 4090 observed on lab401-wk
+# 0000:01:00.0
+# 0000:01:00.1

@@ -1,0 +1,8 @@
+cmake_minimum_required(VERSION 3.16)
+project(pcie_device_manager LANGUAGES CXX)
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+add_executable(pcie-device-daemon src/main.cpp src/pci_device.cpp src/pci_manager.cpp src/iommu.cpp src/vfio.cpp)
+target_include_directories(pcie-device-daemon PRIVATE include)
+target_compile_options(pcie-device-daemon PRIVATE -Wall -Wextra -Wpedantic)
+install(TARGETS pcie-device-daemon RUNTIME DESTINATION bin)
