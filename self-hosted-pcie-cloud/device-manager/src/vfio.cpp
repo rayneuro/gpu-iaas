@@ -2,6 +2,9 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <stdexcept>
+#include <fstream>
+#include <set>
+#include <sstream>
 namespace pcie {
 void write_sysfs(const fs::path& path, const std::string& value) {
     int fd = ::open(path.c_str(), O_WRONLY | O_CLOEXEC);
@@ -54,6 +57,54 @@ void restore_driver(const fs::path& root, const Device& d) {
     if (inspect(root, d.bdf).driver != d.driver)
         throw std::runtime_error("Original driver restoration failed");
     write_sysfs(path / "driver_override", "");
+}
+// Empty target means all functions support isolated FLR. Otherwise the target
+// is an explicitly approved bridge whose complete PCI subtree is leased.
+fs::path group_reset_target(const fs::path& root, const std::vector<Device>& devices,
+                            const fs::path& approvals) {
+    if (devices.empty()) throw std::runtime_error("Empty reset group");
+    bool flr = true;
+    for (const auto& d : devices) {
+        auto path = root / "bus/pci/devices" / d.bdf;
+        if (!fs::exists(path / "reset") || !fs::exists(path / "reset_method")) {
+            flr = false;
+            continue;
+        }
+        std::istringstream methods(read(path / "reset_method"));
+        std::string method;
+        bool found = false;
+        while (methods >> method) if (method == "flr") found = true;
+        if (!found) flr = false;
+    }
+    if (flr) return {};
+    auto parent = fs::canonical(root / "bus/pci/devices" / devices.front().bdf).parent_path();
+    auto bridge = parent.filename().string();
+    auto bridge_device = inspect(root, bridge);
+    if (bridge_device.device_class.rfind("0x0604", 0) != 0)
+        throw std::runtime_error("Reset parent is not a PCI bridge");
+    std::ifstream input(approvals);
+    std::string line;
+    bool approved = false;
+    while (std::getline(input, line)) if (line == bridge) approved = true;
+    if (!approved) throw std::runtime_error("Whole-group reset requires explicit bridge approval: " + bridge);
+    std::set<std::string> expected, affected;
+    for (const auto& d : devices) {
+        auto path = fs::canonical(root / "bus/pci/devices" / d.bdf);
+        if (path.parent_path() != parent)
+            throw std::runtime_error("Group spans multiple PCI parents");
+        expected.insert(d.bdf);
+    }
+    for (const auto& entry : fs::directory_iterator(root / "bus/pci/devices")) {
+        auto path = fs::canonical(entry.path());
+        auto relative = path.lexically_relative(parent);
+        if (!relative.empty() && relative != "." && *relative.begin() != "..")
+            affected.insert(entry.path().filename().string());
+    }
+    if (affected != expected)
+        throw std::runtime_error("Bridge reset would affect devices outside the lease");
+    auto target = parent / "reset_subordinate";
+    if (!fs::exists(target)) throw std::runtime_error("Kernel lacks bridge reset_subordinate");
+    return target;
 }
 void reset_device(const fs::path& root, const Device& d) {
     auto path = root / "bus/pci/devices" / d.bdf;

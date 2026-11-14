@@ -1,4 +1,5 @@
 import json
+import os
 from pathlib import Path
 import subprocess
 import time
@@ -78,13 +79,25 @@ class LibvirtVM:
         seed = directory / "seed.iso"
         if not image.exists():
             run(["qemu-img", "create", "-f", "qcow2", "-F", "qcow2", "-b", spec["image"], str(image)])
-        userdata = {"users": [{"name": "gpu", "shell": "/bin/bash",
+        # Generate unique guest keys through a trusted host provisioning path.
+        # Never learn host keys from an unauthenticated network scan.
+        hostkey = directory / "ssh_host_ed25519_key"
+        if not hostkey.exists():
+            run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(hostkey)])
+        userdata = {"ssh_keys": {"ed25519_private": hostkey.read_text(),
+                                  "ed25519_public": hostkey.with_suffix(".pub").read_text()},"users": [{"name": "gpu", "shell": "/bin/bash",
                               "ssh_authorized_keys": [spec["ssh_public_key"]]}],
                     "ssh_pwauth": False}
+        for name in ("user-data", "meta-data", "seed.iso"):
+            target = directory / name
+            fd = os.open(target, os.O_WRONLY | os.O_CREAT, 0o600)
+            os.close(fd)
+            target.chmod(0o600)
         (directory / "user-data").write_text("#cloud-config\n" + json.dumps(userdata))
         (directory / "meta-data").write_text(json.dumps({"instance-id": identifier,
                                                         "local-hostname": "gpu-" + identifier[:8]}))
         run(["cloud-localds", str(seed), str(directory / "user-data"), str(directory / "meta-data")])
+        (directory / "known_hosts").write_text(identifier + " " + hostkey.with_suffix(".pub").read_text())
         xml = domain_xml(identifier, spec, image, seed)
         (directory / "domain.xml").write_text(xml)
         domain = self.connection.defineXML(xml)
@@ -106,14 +119,19 @@ class LibvirtVM:
                 # provisioned by the administrator or via a trusted image path.
                 command = ["ssh", "-i", self.config["ssh_private_key"], "-o", "BatchMode=yes",
                            "-o", "StrictHostKeyChecking=yes", "-o",
-                           "UserKnownHostsFile=" + self.config["known_hosts"],
+                           "UserKnownHostsFile=" + str(Path(self.config["images_dir"]) / identifier / "known_hosts"),
+                           "-o", "HostKeyAlias=" + identifier,
                            "-o", "ConnectTimeout=5", "gpu@" + ips[0],
                            "nvidia-smi --query-gpu=uuid,name,driver_version --format=csv,noheader"]
                 try:
                     output = run(command, timeout=15)
                     if "GPU-" not in output:
                         raise RuntimeError("Guest reported no GPU UUID")
-                    return {"ip": ips[0], "nvidia_smi": output.strip()}
+                    compute = run(command[:-1] + ["python3 /usr/local/bin/gpu-compute-check.py"], timeout=30)
+                    compute = json.loads(compute)
+                    if compute.get("cuda_compute") != "PASS":
+                        raise RuntimeError("Guest CUDA computation did not pass")
+                    return {"ip": ips[0], "nvidia_smi": output.strip(), "compute": compute}
                 except (subprocess.SubprocessError, RuntimeError) as error:
                     last_error = str(error)
             time.sleep(2)

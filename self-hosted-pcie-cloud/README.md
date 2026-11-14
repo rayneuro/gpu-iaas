@@ -64,9 +64,13 @@ It does not boot a VM or execute nvidia-smi.
    guest SSH host key through a trusted image/provisioning path into known_hosts.
    Strict host-key validation remains enabled. Host-key enrollment is a separate
    administrator step in this prototype.
-7. Check each group function's reset_method supports flr. The initial recovery
-   policy permits function-level reset only. Unsupported reset quarantines
-   the group. RTX 4090 recovery is not yet hardware validated.
+7. Reset preflight must pass before acquisition: either every function exposes
+   reset/reset_method with the exact flr method, or an administrator explicitly
+   approves the immediate upstream bridge in STATE_DIR/reset-bridges.allowlist
+   (one bridge BDF per line). The bridge must expose reset_subordinate, and its
+   entire PCI subtree must exactly equal the leased devices. Never approve a
+   bridge carrying another card, management NIC or storage. No bridge is approved
+   by default. RTX 4090 reuse still requires hardware acceptance testing.
 8. Set CPU/RAM capacity to a dedicated host budget after reserving resources
    for host workloads. Scheduling accounts for platform instances only.
 
@@ -109,8 +113,8 @@ lease expiration. Do not remove journals to force a resource free.
 
 Acquire failures quarantine the lease. Release verifies identities/topology,
 requires no open VFIO/NVIDIA/DRM/iommufd handles, binds any incompletely acquired
-functions to VFIO, checks all FLR methods, resets functions and restores original
-drivers. Failure preserves QUARANTINED. The idle check is intentionally host-wide.
+functions to VFIO, revalidates the approved reset scope, performs individual FLR or one
+bridge-subordinate reset, and restores original drivers. Failure preserves QUARANTINED. The idle check is intentionally host-wide.
 Original kernel modules must remain available for restoration.
 
 This prototype assumes one administrator-controlled host. /proc checks and
@@ -152,3 +156,36 @@ is returned to the pool. Hardware tests and real nvidia-smi results are pending.
 - https://libvirt.org/formatdomain.html#host-device-assignment
 
 Domain XML uses hostdev managed="no" because the C++ daemon owns driver changes.
+
+## RayWK host preparation and reset acceptance
+
+Run `sudo bash scripts/provision_vm_host.sh` from this directory on RayWK.
+This installs VM dependencies, enables libvirt and defines/starts the default
+NAT network only if missing. It preserves an existing network definition and
+refuses the usual subnet when an overlapping 192.168.122 route is detected.
+It does not detach a GPU, approve a bridge, change the management NIC, or stop
+any desktop. Review the existing default network if one already exists.
+Host checks include a libvirt connection and an actual cloud-init seed build;
+guest DHCP, SSH and internet require a subsequent VM boot test.
+
+Observed 2026-11-14: GPU 0000:01:00.0 and audio 0000:01:00.1 form group 16
+below 0000:00:01.0. GPU has FLR; audio lacks individual reset. The bridge exposes
+reset_subordinate and currently has no other PCI descendants. This makes it a
+candidate for explicit bridge approval, not proof of safe hardware recovery.
+Xorg, GNOME and TeamViewer currently use this GPU. Before acceptance, arrange
+an SSH maintenance window, stop all GPU/audio users and check open handles as
+root. Do not rely on a 0% utilization reading. The current idle check remains
+host-wide and can also reject users of unrelated GPUs or DRM devices.
+
+Only after those checks, an administrator can create a root-owned private real
+state directory and add 0000:00:01.0 to its reset-bridges.allowlist. Use separate
+state for real operation; never approve a bridge in simulation and assume real
+safety. A reset error retains QUARANTINED. Do not erase journals to free a card.
+Topology is rechecked at release, but cooperative administration is still
+required: no hotplug or independent privileged device manager during a lease.
+
+Acceptance remains: two complete create/guest-CUDA/stop cycles, checking both
+original drivers after each release and a working GPU on the next guest boot.
+A successful sysfs reset write or mock test alone does not establish reuse,
+data sanitization or hostile-tenant isolation. Desktop restoration must also be
+verified before declaring the maintenance window complete.

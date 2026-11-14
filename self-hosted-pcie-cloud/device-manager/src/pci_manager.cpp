@@ -147,7 +147,11 @@ std::string Manager::acquire(const std::string& owner, const std::string& bdf) {
             && read(root_ / "bus/pci/devices" / d.bdf / "driver_override") != "(null)")
             throw std::runtime_error("Existing driver override requires administrator review");
     }
-    if (execute_) require_idle();
+    if (execute_) {
+        require_idle();
+        // Reject unrecoverable hardware before changing any driver.
+        group_reset_target(root_, members, state_ / "reset-bridges.allowlist");
+    }
     leases_[group] = {owner, "BINDING", members};
     save(); // Durable intent and original drivers precede all mutations.
     try {
@@ -189,17 +193,19 @@ std::string Manager::release(const std::string& owner) {
                         current[i].product != old.product || current[i].group != it->first)
                         throw std::runtime_error("Device identity changed");
                 }
-                // A failed acquire may have bound only part of the group.
-                // Finish taking control before attempting any reset.
+                // Validate the full reset scope before changing any driver.
+                auto target = group_reset_target(root_, lease.devices, state_ / "reset-bridges.allowlist");
                 for (const auto& d : lease.devices) {
                     if (inspect(root_, d.bdf).driver != "vfio-pci") bind_vfio(root_, d);
                 }
-                // Preflight every reset method before the first reset.
-                for (const auto& d : lease.devices) {
-                    if (read(root_ / "bus/pci/devices" / d.bdf / "reset_method").find("flr") == std::string::npos)
-                        throw std::runtime_error("Group lacks approved FLR recovery");
+                if (target.empty()) {
+                    for (const auto& d : lease.devices) reset_device(root_, d);
+                } else {
+                    // Recheck topology immediately before a bridge-wide reset.
+                    if (group_reset_target(root_, lease.devices, state_ / "reset-bridges.allowlist") != target)
+                        throw std::runtime_error("Reset topology changed");
+                    write_sysfs(target, "1");
                 }
-                for (const auto& d : lease.devices) reset_device(root_, d);
                 for (const auto& d : lease.devices) restore_driver(root_, d);
             }
         } catch (...) {
